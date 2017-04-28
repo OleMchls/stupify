@@ -4,12 +4,13 @@ defmodule Stupify do
   @moduledoc """
   Documentation for Stupify.
   """
+  @behaviour Plug.Conn.Adapter
 
   use Application
 
   alias Stupify.Request
 
-  def start(_type, _args) do
+  def start(_type, [plug]) do
     # The options below mean:
     #
     # 1. `:binary` - receives data as binaries (instead of lists)
@@ -21,24 +22,27 @@ defmodule Stupify do
     {:ok, socket} = :gen_tcp.listen(port,
                       [:binary, packet: :line, active: false, reuseaddr: true])
     Logger.info "Accepting connections on port #{port}"
-    loop_acceptor(socket)
+    options = plug.init(%{})
+    Task.start_link(fn -> loop_acceptor(socket, plug) end)
+    {:ok, self()}
   end
 
-  defp loop_acceptor(socket) do
+  defp loop_acceptor(socket, plug) do
     {:ok, client} = :gen_tcp.accept(socket)
     serve(client, %Request{})
-    loop_acceptor(socket)
+    |> respond(plug, client)
+    :gen_tcp.close(client)
+    loop_acceptor(socket, plug)
   end
 
-  defp serve(socket, %Request{awaiting: :response} = req) do
-    Logger.info "sending response now"
-    IO.inspect req
+  defp respond(req, plug, socket) do
+    plug.call(Request.build_conn(req, socket), %{})
   end
 
+  defp serve(socket, %Request{awaiting: :response} = req), do: req
   defp serve(socket, req) do
     req = socket
     |> read_line()
-    |> String.strip
     |> parse(req)
 
     serve(socket, req)
@@ -46,11 +50,12 @@ defmodule Stupify do
 
   defp read_line(socket) do
     {:ok, data} = :gen_tcp.recv(socket, 0)
-    data
+    String.strip data
   end
 
   defp write_line(line, socket) do
-    :gen_tcp.send(socket, line)
+    IO.inspect line
+    :gen_tcp.send(socket, String.to_charlist(line <> "\r\n"))
   end
 
   defp parse(data, %Request{awaiting: :statusline} = req) do
@@ -67,11 +72,28 @@ defmodule Stupify do
 
   defp parse_header(header) do
     [_, key, value] = Regex.run(~r/(.+)\:\s(.+)/, header)
-    {key, value}
+    {String.downcase(key), value}
   end
 
   # Catch all
   defp parse(data, %Request{} = req) do
     Logger.info {data, req}
+  end
+
+  ## Conn
+
+  def send_resp(socket, status, headers, body) do
+    IO.inspect {socket, status, headers, body}
+    write_line("HTTP/1.1 #{status} #{Plug.Conn.Status.reason_phrase(status)}", socket)
+    send_headers headers, socket
+    write_line("", socket)
+    write_line(body, socket)
+    {:ok, nil, socket}
+  end
+
+  defp send_headers([], socket), do: nil
+  defp send_headers([{k, v} | rest], socket) do
+    write_line("#{k}: #{v}", socket)
+    send_headers(rest, socket)
   end
 end
