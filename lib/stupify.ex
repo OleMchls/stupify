@@ -22,8 +22,8 @@ defmodule Stupify do
     {:ok, socket} = :gen_tcp.listen(port,
                       [:binary, packet: :line, active: false, reuseaddr: true])
     Logger.info "Accepting connections on port #{port}"
-    options = plug.init(%{})
-    Task.start_link(fn -> loop_acceptor(socket, plug) end)
+    opts = plug.init(%{})
+    Task.start_link(fn -> loop_acceptor(socket, {plug, opts}) end)
     {:ok, self()}
   end
 
@@ -35,8 +35,8 @@ defmodule Stupify do
     loop_acceptor(socket, plug)
   end
 
-  defp respond(req, plug, socket) do
-    plug.call(Request.build_conn(req, socket), %{})
+  defp respond(req, {plug, opts}, socket) do
+    plug.call(Request.build_conn(req, socket), opts)
   end
 
   defp serve(socket, %Request{awaiting: :response} = req), do: req
@@ -54,7 +54,6 @@ defmodule Stupify do
   end
 
   defp write_line(line, socket) do
-    IO.inspect line
     :gen_tcp.send(socket, String.to_charlist(line <> "\r\n"))
   end
 
